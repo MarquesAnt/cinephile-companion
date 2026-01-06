@@ -1,0 +1,20 @@
+# Python essentials
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.env
+.venv/
+venv/
+ENV/
+
+# Environment Variables (SÉCURITÉ)
+.env
+.env.local
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store

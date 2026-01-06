@@ -1,70 +1,100 @@
-from enum import StrEnum
-from typing import Any
+from enum import Enum
+from typing import List, Union, Optional
 from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
 
+# --- ENUMS (Pour éviter les "Magic Strings") ---
 
-class RuleOperator(StrEnum):
-    EQ = "eq"
-    GTE = "gte"
-    LTE = "lte"
-    IN = "in"
-    CONTAINS = "contains"
-    GT = "gt"
-    LT = "lt"
+class ChallengeType(str, Enum):
+    """Définit le type de mécanique du défi."""
+    COUNT = "count"         # Ex: Voir 5 films
+    SPECIFIC = "specific"   # Ex: Voir un film précis (ID)
+    Streak = "streak"       # Ex: 3 jours de suite (Bonus)
 
+class RuleOperator(str, Enum):
+    """Opérateurs logiques pour valider les métadonnées."""
+    EQ = "eq"           # Égal à
+    NEQ = "neq"         # Différent de
+    GT = "gt"           # Plus grand que (strict)
+    GTE = "gte"         # Plus grand ou égal (ex: year >= 1980)
+    LT = "lt"           # Plus petit que
+    LTE = "lte"         # Plus petit ou égal
+    IN = "in"           # Contenu dans une liste (ex: Genre IN [Horreur, Thriller])
+    CONTAINS = "contains" # Contient une valeur (ex: Cast contains "Brad Pitt")
 
-class Rule(BaseModel):
+# --- SUB-MODELS ---
+
+class ChallengeRule(BaseModel):
+    """
+    Une règle atomique. 
+    Exemple : {field: "year", operator: "gte", value: 1990}
+    """
     field: str = Field(
-        ...,
-        description="Le champ du film à évaluer (ex: 'genre', 'year', 'director')",
-        examples=["genre", "year", "director"]
+        ..., 
+        description="Le champ TMDB à vérifier (ex: 'genres', 'release_date', 'runtime')."
     )
     operator: RuleOperator = Field(
-        ...,
-        description="Opérateur de comparaison à appliquer",
-        examples=[RuleOperator.EQ, RuleOperator.GTE, RuleOperator.IN]
+        ..., 
+        description="L'opérateur logique de comparaison."
     )
-    value: Any = Field(
-        ...,
-        description="Valeur de comparaison (type dépend du field)",
-        examples=["Western", 1960, ["Action", "Thriller"]]
+    # Union permet d'accepter un string, un entier ou une liste selon le besoin
+    value: Union[str, int, float, List[str], List[int]] = Field(
+        ..., 
+        description="La valeur cible pour valider la règle."
     )
 
+# --- CORE MODEL ---
 
 class Challenge(BaseModel):
+    """
+    Représente un objectif ludique complet.
+    Stocké dans Firestore collection 'challenges'.
+    """
+    id: Optional[str] = Field(None, description="Firestore Document ID (généré auto si vide)")
+    title: str = Field(..., min_length=3, max_length=100)
+    description: str = Field(..., max_length=500)
+    
+    challenge_type: ChallengeType = Field(
+        default=ChallengeType.COUNT,
+        description="Le type de défi."
+    )
+    
     target_count: int = Field(
-        ...,
-        description="Nombre de films à voir pour compléter le défi",
-        examples=[5, 10, 20],
-        gt=0
+        default=1, 
+        ge=1, 
+        description="Nombre d'actions requises pour compléter le défi."
     )
-    rules: list[Rule] = Field(
-        ...,
-        description="Liste de conditions (AND) que les films doivent satisfaire",
-        examples=[
-            [
-                {"field": "genre", "operator": "eq", "value": "Western"},
-                {"field": "year", "operator": "gte", "value": 1960}
-            ]
-        ],
-        min_length=1
+    
+    rules: List[ChallengeRule] = Field(
+        default_factory=list,
+        description="Liste des conditions à remplir (Logique AND par défaut)."
     )
+    
     xp_reward: int = Field(
-        ...,
-        description="Points d'expérience accordés à la complétion du défi",
-        examples=[100, 250, 500],
-        ge=0
+        default=100, 
+        ge=0, 
+        description="Points d'expérience gagnés à la complétion."
     )
+    
+    is_active: bool = Field(True, description="Si faux, le défi est archivé.")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    @field_validator("rules")
+    # --- VALIDATORS ---
+
+    @field_validator('rules')
     @classmethod
-    def validate_rules_not_empty(cls, v: list[Rule]) -> list[Rule]:
+    def validate_rules_not_empty(cls, v, info):
+        """Vérifie qu'il y a au moins une règle si le type n'est pas 'SPECIFIC'."""
+        # Note: On accède aux autres champs via info.data dans Pydantic V2 si besoin,
+        # mais ici on fait une validation simple.
         if not v:
-            raise ValueError("La liste rules ne peut pas être vide")
+            # On pourrait autoriser une liste vide pour certains types, 
+            # mais pour le MVP, un défi doit avoir des règles.
+            raise ValueError("Un défi doit contenir au moins une règle de validation.")
         return v
 
 
-def evaluate_rule(movie_data: dict, rule: Rule) -> bool:
+def evaluate_rule(movie_data: dict, rule: ChallengeRule) -> bool:
     field_value = movie_data.get(rule.field)
     
     if field_value is None:
@@ -73,6 +103,8 @@ def evaluate_rule(movie_data: dict, rule: Rule) -> bool:
     match rule.operator:
         case RuleOperator.EQ:
             return field_value == rule.value
+        case RuleOperator.NEQ:
+            return field_value != rule.value
         case RuleOperator.GTE:
             return field_value >= rule.value
         case RuleOperator.LTE:
@@ -91,4 +123,3 @@ def evaluate_rule(movie_data: dict, rule: Rule) -> bool:
             return False
         case _:
             return False
-

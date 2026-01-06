@@ -128,6 +128,135 @@ async def search_movies(query: str) -> List[dict]:
             raise httpx.RequestError(f"Erreur réseau lors de l'appel à l'API TMDB: {e}") from e
 
 
+async def get_popular_movies(page: int = 1) -> List[dict]:
+    """
+    Récupère les films populaires via l'API TMDB.
+    
+    Args:
+        page: Numéro de page (défaut: 1)
+    
+    Returns:
+        Liste de dictionnaires avec les champs: id, title, release_date, poster_path
+    
+    Raises:
+        ValueError: Si TMDB_ACCESS_TOKEN est manquant
+        httpx.HTTPStatusError: Si la requête échoue
+        httpx.RequestError: En cas d'erreur réseau
+    """
+    access_token = _get_access_token()
+    url = f"{TMDB_BASE_URL}/movie/popular"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    params = {
+        "page": page,
+        "language": "fr-FR"
+    }
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = data.get("results", [])
+            
+            movies = [
+                {
+                    "id": movie.get("id"),
+                    "title": movie.get("title", ""),
+                    "release_date": movie.get("release_date", ""),
+                    "poster_path": movie.get("poster_path", "")
+                }
+                for movie in results
+                if movie.get("id")
+            ]
+            
+            return movies
+            
+        except httpx.HTTPStatusError as e:
+            raise httpx.HTTPStatusError(
+                f"Erreur lors de la récupération des films populaires: {e}",
+                request=e.request,
+                response=e.response
+            ) from e
+        except httpx.RequestError as e:
+            raise httpx.RequestError(f"Erreur réseau lors de l'appel à l'API TMDB: {e}") from e
+
+
+async def discover_movies_by_providers(provider_ids: List[int], page: int = 1) -> List[dict]:
+    """
+    Découvre des films filtrés par providers via l'API TMDB (Server-Side Filtering).
+    
+    Args:
+        provider_ids: Liste des IDs de providers (ex: [8, 119] pour Netflix et Prime)
+        page: Numéro de page (défaut: 1)
+    
+    Returns:
+        Liste de dictionnaires avec les champs: id, title, release_date, poster_path
+    
+    Raises:
+        ValueError: Si TMDB_ACCESS_TOKEN est manquant ou si provider_ids est vide
+        httpx.HTTPStatusError: Si la requête échoue
+        httpx.RequestError: En cas d'erreur réseau
+    """
+    if not provider_ids:
+        raise ValueError("provider_ids ne peut pas être vide")
+    
+    access_token = _get_access_token()
+    url = f"{TMDB_BASE_URL}/discover/movie"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    providers_string = "|".join(str(pid) for pid in provider_ids)
+    
+    params = {
+        "language": "fr-FR",
+        "sort_by": "popularity.desc",
+        "watch_region": "FR",
+        "with_watch_providers": providers_string,
+        "page": page
+    }
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = data.get("results", [])
+            
+            seen_ids = set()
+            movies = []
+            for movie in results:
+                movie_id = movie.get("id")
+                if movie_id and movie_id not in seen_ids:
+                    seen_ids.add(movie_id)
+                    movies.append({
+                        "id": movie_id,
+                        "title": movie.get("title", ""),
+                        "release_date": movie.get("release_date", ""),
+                        "poster_path": movie.get("poster_path", "")
+                    })
+            
+            return movies
+            
+        except httpx.HTTPStatusError as e:
+            raise httpx.HTTPStatusError(
+                f"Erreur lors de la découverte de films par providers: {e}",
+                request=e.request,
+                response=e.response
+            ) from e
+        except httpx.RequestError as e:
+            raise httpx.RequestError(f"Erreur réseau lors de l'appel à l'API TMDB: {e}") from e
+
+
 if __name__ == "__main__":
     async def test():
         try:

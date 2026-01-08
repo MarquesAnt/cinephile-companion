@@ -1,6 +1,6 @@
 # 🎬 Ciné-Compagnon (Cinephile Companion)
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://TON-URL-STREAMLIT-ICI)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://marquesant-cinephile-companion-frontendapp-6pnsuw.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 

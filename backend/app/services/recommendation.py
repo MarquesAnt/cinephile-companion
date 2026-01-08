@@ -1,20 +1,30 @@
+import os
 import asyncio
-from typing import List, Set
+from typing import List, Set, Optional
+import google.generativeai as genai
+from sqlmodel import Session, select
+from dotenv import load_dotenv
+
+# --- Architecture Async ---
 from app.services import tmdb
 from app.core.constants import PROVIDER_MAPPING
 
+# --- RAG ---
+from app.database import engine
+from app.models.movie import Movie
+
+load_dotenv()
+GENAI_KEY = os.getenv("GOOGLE_API_KEY")
+
+if GENAI_KEY:
+    genai.configure(api_key=GENAI_KEY)
+
+# ==========================================
+# PARTIE 1 : FILTRE PAR PLATEFORME 
+# ==========================================
 
 def get_common_providers(user_providers: List[List[str]]) -> Set[str]:
-    """
-    Calcule l'union des providers de tous les utilisateurs.
-    Logique: Si l'un de nous a le compte, on peut regarder ce catalogue.
-    
-    Args:
-        user_providers: Liste de listes de providers (ex: [['Netflix'], ['Netflix', 'Prime']])
-    
-    Returns:
-        Set des providers disponibles (union de tous les providers)
-    """
+    """Calcule l'union des providers de tous les utilisateurs."""
     if not user_providers:
         return set()
     
@@ -24,19 +34,8 @@ def get_common_providers(user_providers: List[List[str]]) -> Set[str]:
     
     return union_providers
 
-
 async def filter_movies_by_availability(movies: List[dict], user_providers: List[List[str]], country_code: str = "FR") -> List[dict]:
-    """
-    Filtre les films selon leur disponibilité sur les providers des utilisateurs.
-    
-    Args:
-        movies: Liste de dictionnaires de films avec au moins 'id'
-        user_providers: Liste de listes de providers par utilisateur
-        country_code: Code pays pour la recherche de providers (défaut: "FR")
-    
-    Returns:
-        Liste de films disponibles, enrichis avec 'available_on'
-    """
+    """Filtre les films selon leur disponibilité (Async)."""
     common_providers = get_common_providers(user_providers)
     
     if not common_providers:
@@ -64,35 +63,74 @@ async def filter_movies_by_availability(movies: List[dict], user_providers: List
     
     return available_movies
 
+# ==========================================
+# PARTIE 2 : MOTEUR DE RECHERCHE IA (RAG) 
+# ==========================================
 
-if __name__ == "__main__":
-    async def test():
-        try:
-            user_a_providers = ["Netflix"]
-            user_b_providers = ["Amazon Prime Video"]
-            user_providers = [user_a_providers, user_b_providers]
-            
-            print(f"User A: {user_a_providers}")
-            print(f"User B: {user_b_providers}")
-            
-            common_providers = get_common_providers(user_providers)
-            print(f"Union des providers: {common_providers}")
-            
-            provider_ids = [
-                PROVIDER_MAPPING[provider]
-                for provider in common_providers
-                if provider in PROVIDER_MAPPING
-            ]
-            
-            print(f"Provider IDs: {provider_ids}")
-            
-            movies = await tmdb.discover_movies_by_providers(provider_ids, page=1)
-            print(f"\nFilms disponibles (filtrés côté serveur): {len(movies)}")
-            
-            for movie in movies:
-                print(f"{movie['title']} (ID: {movie['id']})")
-        except Exception as e:
-            print(f"Erreur: {e}")
+def _get_embedding_sync(text: str) -> Optional[List[float]]:
+    """Version bloquante interne de l'appel Gemini."""
+    if not GENAI_KEY:
+        print("⚠️ Erreur : Pas de clé API Google configurée.")
+        return None
+    try:
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=text,
+            task_type="retrieval_query"
+        )
+        return result['embedding']
+    except Exception as e:
+        print(f"⚠️ Erreur Embedding: {e}")
+        return None
+
+def _search_db_sync(vector: List[float], limit: int) -> List[Movie]:
+    """Version bloquante interne de la requête DB."""
+    with Session(engine) as session:
+        statement = (
+            select(Movie)
+            .order_by(Movie.embedding.cosine_distance(vector))
+            .limit(limit)
+        )
+        return session.exec(statement).all()
+
+async def find_similar_movies(user_query: str, limit: int = 5) -> List[Movie]:
+    """
+    Wrapper ASYNC : Rend les opérations lourdes (IA + DB) non-bloquantes
+    pour ne pas figer l'API FastAPI.
+    """
+    print(f"🧠 Analyse de la requête (Async) : '{user_query}'...")
     
-    asyncio.run(test())
+    # 1. On déporte l'appel Gemini dans un thread séparé
+    query_vector = await asyncio.to_thread(_get_embedding_sync, user_query)
+    
+    if not query_vector:
+        return []
 
+    # 2. On déporte la requête SQL dans un thread séparé
+    # (Solution temporaire propre avant de passer à asyncpg)
+    results = await asyncio.to_thread(_search_db_sync, query_vector, limit)
+    
+    return results
+
+# ==========================================
+# TEST UNITAIRE ASYNC
+# ==========================================
+if __name__ == "__main__":
+    async def main_test():
+        print("--- TEST DU MOTEUR RAG (ASYNC) ---")
+        try:
+            phrase_test = "Un film de science fiction avec des robots tueurs"
+            # Note le 'await' ici
+            films = await find_similar_movies(phrase_test, limit=3)
+            
+            print(f"\nRésultats pour : '{phrase_test}'")
+            if films:
+                for film in films:
+                    print(f"🎬 {film.title}")
+            else:
+                print("Aucun film trouvé.")
+
+        except Exception as e:
+            print(f"❌ Erreur critique : {e}")
+
+    asyncio.run(main_test())

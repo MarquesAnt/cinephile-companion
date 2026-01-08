@@ -1,181 +1,133 @@
-import sys
-import asyncio
-import httpx
-from pathlib import Path
-
-# Ajout du chemin parent pour importer backend
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import streamlit as st
-from backend.app.services import tmdb
-from backend.app.services import ai_mood
-from backend.app.core.constants import PROVIDER_MAPPING
+import requests
 
-st.set_page_config(page_title="Ciné-Compagnon", page_icon="🎬", layout="wide")
-
-# URL de base TMDB
+# --- CONFIGURATION ---
+API_URL = "http://127.0.0.1:8000"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
+TMDB_LOGO_URL = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"
 
-def run_async(coro):
-    """Helper async pour Streamlit"""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+st.set_page_config(
+    page_title="Cinéphile Companion",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def display_movies(movies):
-    """Affiche la grille de films avec gestion d'erreurs d'image."""
-    if not movies:
-        st.info("Aucun film trouvé pour ces critères.")
-        return
-    
-    cols = st.columns(5) # 5 colonnes pour plus de densité
-    for idx, movie in enumerate(movies):
-        col = cols[idx % 5]
-        with col:
-            # Gestion sécurisée de l'image
-            poster_path = movie.get("poster_path") # Peut être None
-            
-            if poster_path and poster_path.startswith("/"):
-                image_url = f"{TMDB_IMAGE_BASE_URL}{poster_path}"
-                st.image(image_url, use_container_width=True)
-            else:
-                # Placeholder si pas d'image
-                st.image("https://via.placeholder.com/500x750?text=No+Image", use_container_width=True)
-            
-            st.write(f"**{movie.get('title', 'Sans titre')}**")
-            
-            date = movie.get('release_date', '')
-            if date:
-                st.caption(f"📅 {date[:4]}")
-
-async def discover_with_ai_filters(provider_ids, ai_filters):
-    # (Le code de cette fonction reste identique à ta version précédente, 
-    # assure-toi juste d'avoir les imports corrects si tu as copié partiellement)
-    from backend.app.services.tmdb import TMDB_BASE_URL
-    import os
-    
-    token = os.getenv("TMDB_ACCESS_TOKEN")
-    url = f"{TMDB_BASE_URL}/discover/movie"
-    
-    providers_string = "|".join(str(pid) for pid in provider_ids)
-    params = {
-        "language": "fr-FR",
-        "watch_region": "FR",
-        "with_watch_providers": providers_string,
-        "page": 1,
-        # On fusionne les filtres IA ici
-        **ai_filters 
+# --- CSS CUSTOM ---
+st.markdown("""
+<style>
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        background-color: #E50914; 
+        color: white;
+        border: none;
+        font-weight: bold;
     }
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"}, params=params)
-        resp.raise_for_status()
-        return resp.json().get("results", [])
+    .stButton>button:hover {
+        background-color: #B20710;
+        color: white;
+    }
+    .footer-text {
+        font-size: 12px;
+        color: #888;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- INTERFACE ---
-
-st.title("🎬 Ciné-Compagnon")
-
-with st.sidebar:
-    st.header("1. Vos Plateformes")
-    selected_providers = st.multiselect(
-        "Abonnements disponibles :",
-        list(PROVIDER_MAPPING.keys()),
-        default=["Netflix", "Amazon Prime Video"]
-    )
-    # Conversion en IDs
-    user_provider_ids = [PROVIDER_MAPPING[p] for p in selected_providers]
-    
-    st.markdown("---")
-    st.caption("Données fournies par :")
-    
-    # Logo TMDB officiel (SVG redimensionné)
-    st.markdown(
-        """
-        <img src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg" alt="TMDB Logo" width="100">
-        """,
-        unsafe_allow_html=True
-    )
-    
-    # Disclaimer obligatoire (copié-collé strict du doc)
-    st.caption(
-        "This product uses the TMDB API but is not endorsed or certified by TMDB."
-    )
-
-st.header("2. Qu'est-ce qu'on regarde ?")
-
-tab_mood, tab_search = st.tabs(["🧠 Recherche par Mood (IA)", "🔎 Recherche par Titre"])
-
-# --- ONGLET 1 : MOOD ---
-with tab_mood:
-    mood_text = st.text_input("Décrivez votre envie (ex: 'Un film de guerre qui fait pleurer', 'Comédie années 90')")
-
-    if st.button("Trouver le film parfait", type="primary"):
-        if not mood_text:
-            st.warning("Écrivez quelque chose d'abord !")
+# --- FONCTIONS ---
+def search_movies_api(query):
+    """Appelle notre API FastAPI Backend"""
+    try:
+        response = requests.post(
+            f"{API_URL}/search",
+            json={"query": query},
+            timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
         else:
-            with st.spinner("L'IA analyse votre demande..."):
-                # 1. Appel du service IA (ou Fallback)
-                ai_filters = ai_mood.get_tmdb_filters_from_mood(mood_text)
-                
-                # --- DEBUG BOX (Pour voir si le fallback marche) ---
-                with st.expander("🕵️ Debug - Voir ce que l'IA a compris"):
-                    st.json(ai_filters)
-                # ---------------------------------------------------
+            st.error(f"Erreur API ({response.status_code}) : {response.text}")
+            return []
+    except requests.exceptions.ConnectionError:
+        st.error("Impossible de contacter le Backend. Vérifiez que le serveur tourne sur le port 8000.")
+        return []
+    except Exception as e:
+        st.error(f"Erreur technique : {e}")
+        return []
 
-                # 2. Recherche TMDB
-                if user_provider_ids:
-                    try:
-                        raw_movies = run_async(discover_with_ai_filters(user_provider_ids, ai_filters))
-                        st.success(f"Top résultats trouvés : {len(raw_movies)}")
-                        display_movies(raw_movies)
-                    except Exception as e:
-                        st.error(f"Erreur technique TMDB : {e}")
-                else:
-                    st.error("Sélectionnez au moins une plateforme !")
-                    
-# --- ONGLET 2 : RECHERCHE PAR TITRE ---
-with tab_search:
-    title_query = st.text_input("Titre du film :")
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("Cinéphile Companion")
+    st.markdown("---")
     
-    if title_query:
-        with st.spinner("Recherche TMDB..."):
-            try:
-                # 1. Recherche du film
-                results = run_async(tmdb.search_movies(title_query))
+    st.write("### Vos Préférences")
+    providers = st.multiselect(
+        "Vos plateformes :",
+        ["Netflix", "Amazon Prime", "Disney+", "Canal+"],
+        default=["Netflix", "Amazon Prime"]
+    )
+    
+    st.caption("Mode MVP : Recherche IA active. Le filtre plateforme sera activé prochainement.")
+
+# --- MAIN PAGE ---
+st.markdown("## Que voulez-vous regarder ce soir ?")
+st.markdown("Décrivez votre **envie du moment**.")
+
+# Zone de recherche
+query = st.text_input(
+    label="Recherche",
+    placeholder="Ex: Un film de science-fiction psychologique avec une fin tordue...",
+    label_visibility="collapsed"
+)
+
+if st.button("Trouver le film parfait"):
+    if not query:
+        st.warning("Décrivez d'abord vos envies !")
+    else:
+        with st.spinner("Analyse de la demande..."):
+            results = search_movies_api(query)
+            
+            if results:
+                st.success(f"{len(results)} recommandations trouvées :")
+                st.markdown("---")
                 
-                if results:
-                    best_match = results[0]
-                    st.subheader(f"🎬 {best_match['title']}")
-                    if best_match.get('release_date'):
-                        st.caption(f"Sortie : {best_match['release_date'][:4]}")
-                    
-                    # 2. Récupération des providers (Tout ce qui existe en France)
-                    all_providers = run_async(tmdb.get_movie_providers(best_match['id']))
-                    
-                    if all_providers:
-                        # 3. INTERSECTION INTELLIGENTE
-                        # On vérifie quels providers du film correspondent aux providers de l'utilisateur
-                        # (Assure-toi que selected_provider_names est bien accessible ici)
-                        user_matches = [p for p in all_providers if p in selected_providers]
-                        
-                        if user_matches:
-                            # Cas parfait : Le film est dans mes abos
-                            st.success(f"✅ GO ! Disponible sur vos abos : {', '.join(user_matches)}")
-                        else:
-                            # Cas frustrant : Le film est dispo en stream, mais pas chez moi
-                            st.warning(f"⚠️ Disponible ailleurs ({', '.join(all_providers)}), mais pas dans vos abonnements actuels.")
-                    else:
-                        # Cas désert : Le film n'est nulle part en streaming
-                        st.error("❌ Aucun streaming trouvé en France pour ce titre.")
-                        
-                    # Affichage image
-                    if best_match.get('poster_path'):
-                        st.image(f"{TMDB_IMAGE_BASE_URL}{best_match['poster_path']}", width=200)
-                else:
-                    st.warning("Aucun film trouvé avec ce titre.")
-            except Exception as e:
-                st.error(f"Erreur API : {e}")
+                # Affichage en grille (3 colonnes)
+                cols = st.columns(3)
+                
+                for idx, movie in enumerate(results):
+                    with cols[idx % 3]:
+                        with st.container():
+                            # Image
+                            if movie.get("poster_path"):
+                                st.image(
+                                    f"{TMDB_IMAGE_BASE_URL}{movie['poster_path']}", 
+                                    use_container_width=True
+                                )
+                            else:
+                                st.image("https://via.placeholder.com/500x750?text=No+Poster", use_container_width=True)
+                            
+                            # Titre et Note
+                            st.subheader(movie["title"])
+                            st.caption(f"Note : {movie['vote_average']}/10")
+                            
+                            # Synopsis
+                            with st.expander("Lire le synopsis"):
+                                st.write(movie["overview"])
+                                
+            else:
+                st.warning("Aucun film ne correspond assez à votre demande dans notre base actuelle.")
+
+# --- FOOTER ---
+st.markdown("---")
+st.markdown(f"""
+<div style="text-align: center;">
+    <img src="{TMDB_LOGO_URL}" width="100">
+    <p class="footer-text">
+        This product uses the TMDB API but is not endorsed or certified by TMDB.<br>
+        Propulsé par FastAPI, PostgreSQL pgvector & Google Gemini
+    </p>
+</div>
+""", unsafe_allow_html=True)

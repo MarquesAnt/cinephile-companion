@@ -4,13 +4,11 @@ import requests
 # --- CONFIGURATION ---
 API_URL = "http://127.0.0.1:8000"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
-TMDB_LOGO_URL = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"
 
 st.set_page_config(
     page_title="Cinéphile Companion",
     page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # --- CSS CUSTOM ---
@@ -25,35 +23,38 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
-    .stButton>button:hover {
-        background-color: #B20710;
-        color: white;
-    }
-    .footer-text {
-        font-size: 12px;
-        color: #888;
-        text-align: center;
+    .provider-badge {
+        background-color: #46d369;
+        color: black;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.8em;
+        font-weight: bold;
+        margin-right: 4px;
+        display: inline-block;
+        margin-bottom: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # --- FONCTIONS ---
-def search_movies_api(query):
-    """Appelle notre API FastAPI Backend"""
+def search_movies_api(query, providers):
+    """Appelle l'API avec query ET providers"""
     try:
+        payload = {
+            "query": query,
+            "providers": providers
+        }
         response = requests.post(
             f"{API_URL}/search",
-            json={"query": query},
-            timeout=10
+            json=payload, # On envoie le payload complet
+            timeout=15 # Timeout un peu plus long car TMDB fetch en temps réel
         )
         if response.status_code == 200:
             return response.json()
         else:
-            st.error(f"Erreur API ({response.status_code}) : {response.text}")
+            st.error(f"Erreur API ({response.status_code})")
             return []
-    except requests.exceptions.ConnectionError:
-        st.error("Impossible de contacter le Backend. Vérifiez que le serveur tourne sur le port 8000.")
-        return []
     except Exception as e:
         st.error(f"Erreur technique : {e}")
         return []
@@ -61,73 +62,55 @@ def search_movies_api(query):
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("Cinéphile Companion")
-    st.markdown("---")
-    
     st.write("### Vos Préférences")
-    providers = st.multiselect(
-        "Vos plateformes :",
-        ["Netflix", "Amazon Prime", "Disney+", "Canal+"],
-        default=["Netflix", "Amazon Prime"]
+    
+    # Liste de providers statique pour le MVP
+    # Idéalement, cette liste viendrait du backend aussi
+    selected_providers = st.multiselect(
+        "Vos abonnements :",
+        ["Netflix", "Amazon Prime Video", "Disney+", "Canal+", "Apple TV+"],
+        default=["Netflix", "Amazon Prime Video"]
     )
     
-    st.caption("Mode MVP : Recherche IA active. Le filtre plateforme sera activé prochainement.")
+    st.info(f"Filtre actif : {len(selected_providers)} plateformes")
 
 # --- MAIN PAGE ---
 st.markdown("## Que voulez-vous regarder ce soir ?")
-st.markdown("Décrivez votre **envie du moment**.")
-
-# Zone de recherche
-query = st.text_input(
-    label="Recherche",
-    placeholder="Ex: Un film de science-fiction psychologique avec une fin tordue...",
-    label_visibility="collapsed"
-)
+query = st.text_input("Recherche", placeholder="Ex: Un film de SF psychologique...")
 
 if st.button("Trouver le film parfait"):
     if not query:
-        st.warning("Décrivez d'abord vos envies !")
+        st.warning("Décrivez vos envies !")
     else:
-        with st.spinner("Analyse de la demande..."):
-            results = search_movies_api(query)
+        with st.spinner("Recherche sémantique & vérification des disponibilités..."):
+            results = search_movies_api(query, selected_providers)
             
             if results:
-                st.success(f"{len(results)} recommandations trouvées :")
-                st.markdown("---")
-                
-                # Affichage en grille (3 colonnes)
+                st.success(f"{len(results)} films trouvés !")
                 cols = st.columns(3)
                 
                 for idx, movie in enumerate(results):
                     with cols[idx % 3]:
                         with st.container():
-                            # Image
-                            if movie.get("poster_path"):
-                                st.image(
-                                    f"{TMDB_IMAGE_BASE_URL}{movie['poster_path']}", 
-                                    use_container_width=True
-                                )
-                            else:
-                                st.image("https://via.placeholder.com/500x750?text=No+Poster", use_container_width=True)
+                            # Poster
+                            img_url = f"{TMDB_IMAGE_BASE_URL}{movie['poster_path']}" if movie.get('poster_path') else "https://via.placeholder.com/500x750?text=No+Poster"
+                            st.image(img_url, use_container_width=True)
                             
-                            # Titre et Note
+                            # Titre
                             st.subheader(movie["title"])
-                            st.caption(f"Note : {movie['vote_average']}/10")
                             
-                            # Synopsis
-                            with st.expander("Lire le synopsis"):
-                                st.write(movie["overview"])
-                                
-            else:
-                st.warning("Aucun film ne correspond assez à votre demande dans notre base actuelle.")
+                            # Badges de disponibilité
+                            if movie.get("available_on"):
+                                badges_html = ""
+                                for p in movie["available_on"]:
+                                    badges_html += f'<span class="provider-badge">{p}</span>'
+                                st.markdown(badges_html, unsafe_allow_html=True)
+                            else:
+                                st.caption("Non disponible sur vos plateformes (ou info manquante)")
 
-# --- FOOTER ---
-st.markdown("---")
-st.markdown(f"""
-<div style="text-align: center;">
-    <img src="{TMDB_LOGO_URL}" width="100">
-    <p class="footer-text">
-        This product uses the TMDB API but is not endorsed or certified by TMDB.<br>
-        Propulsé par FastAPI, PostgreSQL pgvector & Google Gemini
-    </p>
-</div>
-""", unsafe_allow_html=True)
+                            # Note et Synthèse
+                            st.caption(f"⭐ {movie['vote_average']}/10")
+                            with st.expander("Synopsis"):
+                                st.write(movie["overview"])
+            else:
+                st.warning("Aucun film correspondant trouvé sur vos plateformes.")

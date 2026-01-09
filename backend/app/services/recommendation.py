@@ -39,23 +39,33 @@ async def filter_movies_by_availability(movies: List[dict], user_providers: List
     common_providers = get_common_providers(user_providers)
     
     if not common_providers:
-        return []
+        # Si l'utilisateur n'a coché aucune plateforme, on renvoie tout
+        return movies 
     
-    tasks = [
-        tmdb.get_movie_providers(movie["id"], country_code)
-        for movie in movies
-    ]
+    tasks = []
+    for movie in movies:
+        # Sécurité : on vérifie si tmdb_id existe, sinon fallback sur id 
+        target_id = movie.get("tmdb_id", movie["id"]) 
+        tasks.append(tmdb.get_movie_providers(target_id, country_code))
+        
     
     movie_providers_list = await asyncio.gather(*tasks, return_exceptions=True)
     
     available_movies = []
-    for movie, movie_providers in zip(movies, movie_providers_list):
-        if isinstance(movie_providers, Exception):
+    for movie, providers_result in zip(movies, movie_providers_list):
+        # Gestion d'erreur silencieuse pour un film donné
+        if isinstance(providers_result, Exception):
+            print(f"⚠️ Erreur TMDB pour {movie['title']}: {providers_result}")
+            continue
+            
+        # Si providers_result est None ou vide, on passe
+        if not providers_result:
             continue
         
-        movie_providers_set = set(movie_providers)
+        movie_providers_set = set(providers_result)
         intersection = movie_providers_set.intersection(common_providers)
         
+        # Si on a une correspondance (ex: le film est sur Netflix ET l'user a Netflix)
         if intersection:
             movie_copy = movie.copy()
             movie_copy["available_on"] = sorted(list(intersection))
